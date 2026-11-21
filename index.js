@@ -10,11 +10,12 @@ const PHONE_NUMBER = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, '');
 const OWNER_JID = (process.env.OWNER_JID || '').replace(/[^0-9]/g, '');
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
+const BOT_PREFIX = '.';
 
 let LATEST_CODE = PHONE_NUMBER
   ? 'Generating secure pairing code...'
   : 'Set PHONE_NUMBER before starting';
-let BOT_STATUS = 'DISCONNECTED';
+let BOT_STATUS = 'CONNECTED';
 
 function escapeHtml(value) {
   return String(value)
@@ -201,7 +202,9 @@ function commandMenu() {
 👑 *Owner*
 • status — Detailed bot status
 • broadcast <message> — Send to all groups
-• owners — Show owner setup`;
+• owners — Show owner setup
+
+Prefix: *.*`;
 }
 
 async function aiReply(prompt) {
@@ -281,12 +284,15 @@ async function startBot() {
         msg.message.extendedTextMessage?.text || '';
       const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
       const cmdText = text.trim();
-      const cmd = cmdText.toLowerCase().replace(/^[.!/]/, '').split(/\s+/)[0];
-      const args = cmdText.replace(/^[.!/]/, '').trim().replace(/^\S+\s*/, '');
+
+      if (!cmdText.startsWith(BOT_PREFIX)) continue;
+
+      const cmd = cmdText.slice(BOT_PREFIX.length).trim().toLowerCase().split(/\s+/)[0];
+      const args = cmdText.slice(BOT_PREFIX.length).trim().replace(/^\S+\s*/, '');
 
       try {
         if (cmd === 'hi' || cmd === 'hello') {
-          await sock.sendMessage(from, { text: 'Hello 👋 I am BRIAN BOT\nType *menu* to see commands' });
+          await sock.sendMessage(from, { text: 'Hello 👋 I am BRIAN BOT\nType *.menu* to see commands' });
         } else if (cmd === 'menu' || cmd === 'help') {
           await sock.sendMessage(from, { text: commandMenu() });
         } else if (cmd === 'ping') {
@@ -297,7 +303,7 @@ async function startBot() {
           const seconds = Math.floor(process.uptime());
           await sock.sendMessage(from, { text: `⏱️ Uptime: ${seconds}s` });
         } else if (cmd === 'calc') {
-          if (!args) throw new Error('Usage: calc 2+2');
+          if (!args) throw new Error('Usage: .calc 2+2');
           if (!/^[-+*/().0-9\s]+$/.test(args)) throw new Error('Only basic arithmetic is allowed');
           const result = Function(`"use strict"; return (${args})`)();
           await sock.sendMessage(from, { text: `🧮 Result: ${result}` });
@@ -320,21 +326,21 @@ async function startBot() {
         } else if (cmd === 'ship') {
           await sock.sendMessage(from, { text: `💕 Compatibility: ${Math.floor(Math.random() * 101)}%` });
         } else if (cmd === 'ai' || cmd === 'ask') {
-          if (!args) throw new Error('Usage: ai <your question>');
+          if (!args) throw new Error('Usage: .ai <your question>');
           await sock.sendMessage(from, { text: '🤖 Thinking...' });
           const reply = await aiReply(args);
           await sock.sendMessage(from, { text: `🤖 ${reply}` });
         } else if (cmd === 'save') {
-          if (!quoted) throw new Error('Reply to a photo, video, document, or audio message with save');
+          if (!quoted) throw new Error('Reply to a photo, video, document, or audio message with .save');
           const key = Object.keys(quoted)[0];
           const buffer = await downloadMediaMessage({ message: { [key]: quoted[key] } }, 'buffer', {});
           if (buffer.length > 20 * 1024 * 1024) throw new Error('Media exceeds the 20 MB WhatsApp bot limit');
           await sock.sendMessage(from, { document: buffer, mimetype: 'application/octet-stream', fileName: 'saved-media.bin' });
         } else if (cmd === 'mediainfo') {
           const mediaType = Object.keys(msg.message).find(key => key !== 'conversation' && key !== 'extendedTextMessage');
-          await sock.sendMessage(from, { text: `🖼️ Media type: ${mediaType || 'none'}\nTo save media, reply to it with *save*.` });
+          await sock.sendMessage(from, { text: `🖼️ Media type: ${mediaType || 'none'}\nTo save media, reply to it with *.save*.` });
         } else if (cmd === 'download') {
-          if (!/^https?:\/\/\S+$/.test(args)) throw new Error('Usage: download <direct-https-url>');
+          if (!/^https?:\/\/\S+$/.test(args)) throw new Error('Usage: .download <direct-https-url>');
           const url = new URL(args);
           const response = await fetch(url);
           if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
@@ -364,7 +370,7 @@ async function startBot() {
               await sock.sendMessage(from, { text: `📣 ${args || 'Attention everyone!'}\n\n${mentions.map(jid => `@${normalizeJid(jid)}`).join(' ')}`, mentions });
             } else {
               const targets = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
-              if (!targets.length) throw new Error(`Usage: ${cmd} @member`);
+              if (!targets.length) throw new Error(`Usage: .${cmd} @member`);
               if (cmd === 'kick') await sock.groupParticipantsUpdate(from, targets, 'remove');
               if (cmd === 'promote') await sock.groupParticipantsUpdate(from, targets, 'promote');
               if (cmd === 'demote') await sock.groupParticipantsUpdate(from, targets, 'demote');
@@ -374,9 +380,9 @@ async function startBot() {
         } else if (['status', 'broadcast', 'owners'].includes(cmd)) {
           if (!isOwner(sock, sender)) throw new Error('This command is restricted to the owner');
           if (cmd === 'status') {
-            await sock.sendMessage(from, { text: `👑 *Owner Status*\nStatus: ${BOT_STATUS}\nUptime: ${Math.floor(process.uptime())}s\nAI: ${OPENAI_API_KEY ? 'Configured' : 'Not configured'}\nNode: ${process.version}` });
+            await sock.sendMessage(from, { text: `👑 *Owner Status*\nStatus: ONLINE\nUptime: ${Math.floor(process.uptime())}s\nPrefix: .\nAI: ${OPENAI_API_KEY ? 'Configured' : 'Not configured'}\nNode: ${process.version}` });
           } else if (cmd === 'broadcast') {
-            if (!args) throw new Error('Usage: broadcast <message>');
+            if (!args) throw new Error('Usage: .broadcast <message>');
             const groups = await sock.groupFetchAllParticipating();
             let sent = 0;
             for (const jid of Object.keys(groups)) {
