@@ -15,7 +15,6 @@ let LATEST_CODE = PHONE_NUMBER
   ? 'Generating secure pairing code...'
   : 'Set PHONE_NUMBER before starting';
 let BOT_STATUS = 'DISCONNECTED';
-let sockGlobal = null;
 
 function escapeHtml(value) {
   return String(value)
@@ -34,8 +33,8 @@ const server = http.createServer((req, res) => {
   }
 
   const isOnline = BOT_STATUS === 'CONNECTED';
-  const color = isOnline ? '#25D366' : '#FF3B30';
-  const text = isOnline ? '✅ ONLINE - CONNECTED' : '🔴 DISCONNECTED';
+  const statusColor = isOnline ? '#25D366' : '#C6A15B';
+  const statusText = isOnline ? '✅ ONLINE - CONNECTED' : '🔴 DISCONNECTED';
 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`<!doctype html>
@@ -43,28 +42,107 @@ const server = http.createServer((req, res) => {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BRIAN BOT</title>
+  <title>BRIAN BOT - Pairing</title>
+  <style>
+    :root {
+      --gold: #FFD700;
+      --gold-dark: #C6A15B;
+      --green: #25D366;
+      --green-dark: #075E54;
+      --ink: #08140f;
+      --panel: #10251c;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      color: #fff;
+      background:
+        radial-gradient(circle at 50% 12%, rgba(37, 211, 102, .18), transparent 34%),
+        linear-gradient(145deg, var(--ink), #0b1d16 60%, #071009);
+      padding: 24px 16px;
+    }
+    .shell { max-width: 620px; margin: 0 auto; }
+    .crown {
+      font-size: 56px;
+      filter: drop-shadow(0 4px 12px rgba(255, 215, 0, .28));
+    }
+    h1 {
+      margin: 8px 0 4px;
+      color: var(--gold);
+      letter-spacing: 2px;
+      text-shadow: 0 2px 18px rgba(255, 215, 0, .18);
+    }
+    .tagline { color: var(--gold); font-weight: bold; }
+    .status {
+      display: inline-block;
+      min-width: 240px;
+      margin: 12px 0 6px;
+      padding: 13px 20px;
+      border: 2px solid var(--gold);
+      border-radius: 999px;
+      background: ${statusColor};
+      color: #fff;
+      box-shadow: 0 8px 24px rgba(37, 211, 102, .18);
+      font-weight: bold;
+    }
+    .card {
+      margin: 20px 0;
+      padding: 22px;
+      border: 1px solid rgba(255, 215, 0, .75);
+      border-radius: 18px;
+      background: linear-gradient(145deg, rgba(16, 37, 28, .96), rgba(7, 94, 84, .28));
+      box-shadow: 0 14px 38px rgba(0, 0, 0, .28);
+    }
+    .card-title { color: var(--gold); margin-top: 0; }
+    .pairing-code {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+      border: 2px solid var(--green);
+      border-radius: 14px;
+      background: #07130e;
+      color: var(--gold);
+      font-size: clamp(22px, 7vw, 34px);
+      letter-spacing: 4px;
+      font-weight: bold;
+      box-shadow: inset 0 0 24px rgba(37, 211, 102, .09);
+      overflow-wrap: anywhere;
+    }
+    .instructions { text-align: left; }
+    .instructions li { margin: 10px 0; line-height: 1.45; }
+    .instructions b { color: var(--gold); }
+    footer { color: #9ec1b0; font-size: 12px; }
+  </style>
 </head>
-<body style="font-family:Arial,sans-serif;text-align:center;padding:20px;background:#0b141a;color:white;margin:0">
-  <div style="font-size:50px">👑</div>
-  <h1>BRIAN BOT</h1>
-  <p style="color:#FFD700">👑 KING OF BOTS • GREEN + GOLD 👑</p>
-  <div style="background:${color};padding:12px;border-radius:20px;font-weight:bold">${text}</div>
-  <div style="border:1px solid #FFD700;border-radius:15px;padding:20px;margin:20px auto;max-width:600px">
-    <p><b>PAIRING CODE</b></p>
-    <div style="background:#111b21;padding:20px;border-radius:10px;font-size:28px;letter-spacing:3px;font-weight:bold;color:#FFD700">${escapeHtml(LATEST_CODE)}</div>
-  </div>
-  <div style="text-align:left;background:#111b21;padding:15px;border-radius:15px;margin:20px auto;max-width:600px">
-    <p><b>📱 LINKING INSTRUCTIONS</b></p>
-    <ol>
-      <li>Set <b>PHONE_NUMBER</b> in the deployment environment.</li>
-      <li>Start the application and wait for the pairing code.</li>
-      <li>Open WhatsApp on that phone.</li>
-      <li>Open <b>Linked Devices → Link a Device → Link with phone number instead</b>.</li>
-      <li>Enter the pairing code shown above.</li>
-    </ol>
-  </div>
-  <p style="color:#888;font-size:12px">👑 BRIAN BOT © 2026</p>
+<body>
+  <main class="shell">
+    <div class="crown">👑</div>
+    <h1>BRIAN BOT</h1>
+    <p class="tagline">👑 KING OF BOTS • GREEN + GOLD 👑</p>
+    <div class="status">${statusText}</div>
+
+    <section class="card">
+      <h2 class="card-title">PAIRING CODE</h2>
+      <div class="pairing-code">${escapeHtml(LATEST_CODE)}</div>
+    </section>
+
+    <section class="card instructions">
+      <h2 class="card-title">📱 LINKING INSTRUCTIONS</h2>
+      <ol>
+        <li>Set <b>PHONE_NUMBER</b> in the deployment environment.</li>
+        <li>Start the application and wait for the pairing code.</li>
+        <li>Open WhatsApp on that phone.</li>
+        <li>Open <b>Linked Devices → Link a Device → Link with phone number instead</b>.</li>
+        <li>Enter the pairing code shown above.</li>
+      </ol>
+    </section>
+    <footer>👑 BRIAN BOT © 2026</footer>
+  </main>
 </body>
 </html>`);
 });
@@ -162,7 +240,6 @@ async function startBot() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false
   });
-  sockGlobal = sock;
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -194,7 +271,7 @@ async function startBot() {
     }
   });
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+  sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       if (!msg.message || msg.key.fromMe) continue;
 
@@ -208,7 +285,6 @@ async function startBot() {
       const args = cmdText.replace(/^[.!/]/, '').trim().replace(/^\S+\s*/, '');
 
       try {
-        // General commands
         if (cmd === 'hi' || cmd === 'hello') {
           await sock.sendMessage(from, { text: 'Hello 👋 I am BRIAN BOT\nType *menu* to see commands' });
         } else if (cmd === 'menu' || cmd === 'help') {
@@ -223,13 +299,10 @@ async function startBot() {
         } else if (cmd === 'calc') {
           if (!args) throw new Error('Usage: calc 2+2');
           if (!/^[-+*/().0-9\s]+$/.test(args)) throw new Error('Only basic arithmetic is allowed');
-          // eslint-disable-next-experimental
           const result = Function(`"use strict"; return (${args})`)();
           await sock.sendMessage(from, { text: `🧮 Result: ${result}` });
         } else if (cmd === 'jid') {
           await sock.sendMessage(from, { text: `Chat JID: ${from}\nSender JID: ${sender}` });
-
-        // Fun commands
         } else if (cmd === 'joke') {
           const jokes = [
             'Why did the computer show up late? It had a hard drive! 😄',
@@ -246,29 +319,23 @@ async function startBot() {
           await sock.sendMessage(from, { text: `💡 ${facts[Math.floor(Math.random() * facts.length)]}` });
         } else if (cmd === 'ship') {
           await sock.sendMessage(from, { text: `💕 Compatibility: ${Math.floor(Math.random() * 101)}%` });
-
-        // AI commands
         } else if (cmd === 'ai' || cmd === 'ask') {
           if (!args) throw new Error('Usage: ai <your question>');
           await sock.sendMessage(from, { text: '🤖 Thinking...' });
           const reply = await aiReply(args);
           await sock.sendMessage(from, { text: `🤖 ${reply}` });
-
-        // Media commands
         } else if (cmd === 'save') {
           if (!quoted) throw new Error('Reply to a photo, video, document, or audio message with save');
-          const buffer = await downloadMediaMessage({ message: { [Object.keys(quoted)[0]]: Object.values(quoted)[0] } }, 'buffer', {});
+          const key = Object.keys(quoted)[0];
+          const buffer = await downloadMediaMessage({ message: { [key]: quoted[key] } }, 'buffer', {});
           if (buffer.length > 20 * 1024 * 1024) throw new Error('Media exceeds the 20 MB WhatsApp bot limit');
           await sock.sendMessage(from, { document: buffer, mimetype: 'application/octet-stream', fileName: 'saved-media.bin' });
         } else if (cmd === 'mediainfo') {
           const mediaType = Object.keys(msg.message).find(key => key !== 'conversation' && key !== 'extendedTextMessage');
           await sock.sendMessage(from, { text: `🖼️ Media type: ${mediaType || 'none'}\nTo save media, reply to it with *save*.` });
-
-        // Direct URL downloader
         } else if (cmd === 'download') {
           if (!/^https?:\/\/\S+$/.test(args)) throw new Error('Usage: download <direct-https-url>');
           const url = new URL(args);
-          if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Only HTTP(S) URLs are allowed');
           const response = await fetch(url);
           if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
           const buffer = Buffer.from(await response.arrayBuffer());
@@ -276,8 +343,6 @@ async function startBot() {
           const mime = response.headers.get('content-type') || 'application/octet-stream';
           const filename = url.pathname.split('/').pop() || 'download.bin';
           await sock.sendMessage(from, { document: buffer, mimetype: mime, fileName: filename });
-
-        // Group commands
         } else if (['groupinfo', 'members', 'tagall', 'promote', 'demote', 'kick'].includes(cmd)) {
           if (!from.endsWith('@g.us')) throw new Error('This command can only be used in groups');
           const metadata = await sock.groupMetadata(from);
@@ -298,7 +363,7 @@ async function startBot() {
               const mentions = metadata.participants.map(p => p.id);
               await sock.sendMessage(from, { text: `📣 ${args || 'Attention everyone!'}\n\n${mentions.map(jid => `@${normalizeJid(jid)}`).join(' ')}`, mentions });
             } else {
-              const targets = (msg.message.extendedTextMessage?.contextInfo?.mentionedJid || []);
+              const targets = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
               if (!targets.length) throw new Error(`Usage: ${cmd} @member`);
               if (cmd === 'kick') await sock.groupParticipantsUpdate(from, targets, 'remove');
               if (cmd === 'promote') await sock.groupParticipantsUpdate(from, targets, 'promote');
@@ -306,8 +371,6 @@ async function startBot() {
               await sock.sendMessage(from, { text: `✅ ${cmd.charAt(0).toUpperCase() + cmd.slice(1)} completed for ${targets.length} member(s).` });
             }
           }
-
-        // Owner commands
         } else if (['status', 'broadcast', 'owners'].includes(cmd)) {
           if (!isOwner(sock, sender)) throw new Error('This command is restricted to the owner');
           if (cmd === 'status') {
