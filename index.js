@@ -6,16 +6,17 @@ const {
 const pino = require('pino');
 const http = require('http');
 
-const PHONE_NUMBER = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, '');
+let PAIRING_NUMBER = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, '');
 const OWNER_JID = (process.env.OWNER_JID || '').replace(/[^0-9]/g, '');
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
 const BOT_PREFIX = '.';
 
-let LATEST_CODE = PHONE_NUMBER
+let LATEST_CODE = PAIRING_NUMBER
   ? 'Generating secure pairing code...'
-  : 'Set PHONE_NUMBER before starting';
-let BOT_STATUS = 'CONNECTED';
+  : 'Phone number is optional. Insert one to generate a pairing code.';
+let BOT_STATUS = 'STARTING';
+let botSocket = null;
 
 function escapeHtml(value) {
   return String(value)
@@ -26,16 +27,64 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
-const server = http.createServer((req, res) => {
-  if (req.url === '/health') {
+async function readRequestBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+async function requestPairingCode(number) {
+  if (!/^\d{7,15}$/.test(number)) {
+    throw new Error('Enter a valid international phone number (7–15 digits).');
+  }
+  if (!botSocket) {
+    throw new Error('The bot is still starting. Please try again in a few seconds.');
+  }
+  PAIRING_NUMBER = number;
+  LATEST_CODE = 'Generating secure pairing code...';
+  const code = await botSocket.requestPairingCode(number);
+  LATEST_CODE = code;
+  console.log(`📱 Pairing code for ${number}: ${code}`);
+  return code;
+}
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+  if (req.method === 'POST' && url.pathname === '/pairing-number') {
+    try {
+      let number = '';
+      const contentType = req.headers['content-type'] || '';
+      if (contentType.includes('application/json')) {
+        const body = await readRequestBody(req);
+        number = JSON.parse(body || '{}').phoneNumber || '';
+      } else {
+        const body = await readRequestBody(req);
+        number = new URLSearchParams(body).get('phoneNumber') || '';
+      }
+      number = String(number).replace(/[^0-9]/g, '');
+      const code = await requestPairingCode(number);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, pairingCode: code }));
+    } catch (error) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: error.message }));
+    }
+    return;
+  }
+
+  if (url.pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: BOT_STATUS.toLowerCase() }));
+    res.end(JSON.stringify({
+      status: BOT_STATUS.toLowerCase(),
+      pairingNumberConfigured: Boolean(PAIRING_NUMBER)
+    }));
     return;
   }
 
   const isOnline = BOT_STATUS === 'CONNECTED';
-  const statusColor = isOnline ? '#25D366' : '#C6A15B';
-  const statusText = isOnline ? '✅ ONLINE - CONNECTED' : '🔴 DISCONNECTED';
+  const statusColor = isOnline ? '#25D365' : '#C6A15B';
+  const statusText = isOnline ? '✅ ONLINE - CONNECTED' : `🔴 ${BOT_STATUS}`;
 
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`<!doctype html>
@@ -45,79 +94,25 @@ const server = http.createServer((req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>BRIAN BOT - Pairing</title>
   <style>
-    :root {
-      --gold: #FFD700;
-      --gold-dark: #C6A15B;
-      --green: #25D366;
-      --green-dark: #075E54;
-      --ink: #08140f;
-      --panel: #10251c;
-    }
-    * { box-sizing: border-box; }
-    body {
-      min-height: 100vh;
-      margin: 0;
-      font-family: Arial, sans-serif;
-      text-align: center;
-      color: #fff;
-      background:
-        radial-gradient(circle at 50% 12%, rgba(37, 211, 102, .18), transparent 34%),
-        linear-gradient(145deg, var(--ink), #0b1d16 60%, #071009);
-      padding: 24px 16px;
-    }
-    .shell { max-width: 620px; margin: 0 auto; }
-    .crown {
-      font-size: 56px;
-      filter: drop-shadow(0 4px 12px rgba(255, 215, 0, .28));
-    }
-    h1 {
-      margin: 8px 0 4px;
-      color: var(--gold);
-      letter-spacing: 2px;
-      text-shadow: 0 2px 18px rgba(255, 215, 0, .18);
-    }
-    .tagline { color: var(--gold); font-weight: bold; }
-    .status {
-      display: inline-block;
-      min-width: 240px;
-      margin: 12px 0 6px;
-      padding: 13px 20px;
-      border: 2px solid var(--gold);
-      border-radius: 999px;
-      background: ${statusColor};
-      color: #fff;
-      box-shadow: 0 8px 24px rgba(37, 211, 102, .18);
-      font-weight: bold;
-    }
-    .card {
-      margin: 20px 0;
-      padding: 22px;
-      border: 1px solid rgba(255, 215, 0, .75);
-      border-radius: 18px;
-      background: linear-gradient(145deg, rgba(16, 37, 28, .96), rgba(7, 94, 84, .28));
-      box-shadow: 0 14px 38px rgba(0, 0, 0, .28);
-    }
-    .card-title { color: var(--gold); margin-top: 0; }
-    .pairing-code {
-      min-height: 72px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 18px;
-      border: 2px solid var(--green);
-      border-radius: 14px;
-      background: #07130e;
-      color: var(--gold);
-      font-size: clamp(22px, 7vw, 34px);
-      letter-spacing: 4px;
-      font-weight: bold;
-      box-shadow: inset 0 0 24px rgba(37, 211, 102, .09);
-      overflow-wrap: anywhere;
-    }
-    .instructions { text-align: left; }
-    .instructions li { margin: 10px 0; line-height: 1.45; }
-    .instructions b { color: var(--gold); }
-    footer { color: #9ec1b0; font-size: 12px; }
+    :root { --gold:#FFD700; --green:#25D366; --ink:#08140f; }
+    * { box-sizing:border-box; }
+    body { min-height:100vh; margin:0; font-family:Arial,sans-serif; text-align:center; color:#fff;
+      background:radial-gradient(circle at 50% 12%,rgba(37,211,102,.18),transparent 34%),linear-gradient(145deg,var(--ink),#0b1d16 60%,#071009); padding:24px 16px; }
+    .shell { max-width:620px; margin:0 auto; }
+    .crown { font-size:56px; }
+    h1 { margin:8px 0 4px; color:var(--gold); letter-spacing:2px; }
+    .tagline { color:var(--gold); font-weight:bold; }
+    .status { display:inline-block; min-width:240px; margin:12px 0 6px; padding:13px 20px; border:2px solid var(--gold); border-radius:999px; background:${statusColor}; font-weight:bold; }
+    .card { margin:20px 0; padding:22px; border:1px solid rgba(255,215,0,.75); border-radius:18px; background:linear-gradient(145deg,rgba(16,37,28,.96),rgba(7,94,84,.28)); box-shadow:0 14px 38px rgba(0,0,0,.28); }
+    .card-title { color:var(--gold); margin-top:0; }
+    .pairing-code { min-height:72px; display:flex; align-items:center; justify-content:center; padding:18px; border:2px solid var(--green); border-radius:14px; background:#07130e; color:var(--gold); font-size:clamp(22px,7vw,34px); letter-spacing:4px; font-weight:bold; overflow-wrap:anywhere; }
+    input { width:100%; padding:14px; border:1px solid var(--gold); border-radius:10px; background:#07130e; color:#fff; font-size:18px; }
+    button { width:100%; margin-top:12px; padding:14px; border:0; border-radius:10px; background:var(--gold); color:#08140f; font-size:16px; font-weight:bold; cursor:pointer; }
+    .optional { color:#9ec1b0; font-size:13px; }
+    .instructions { text-align:left; }
+    .instructions li { margin:10px 0; line-height:1.45; }
+    .instructions b { color:var(--gold); }
+    footer { color:#9ec1b0; font-size:12px; }
   </style>
 </head>
 <body>
@@ -129,14 +124,25 @@ const server = http.createServer((req, res) => {
 
     <section class="card">
       <h2 class="card-title">PAIRING CODE</h2>
-      <div class="pairing-code">${escapeHtml(LATEST_CODE)}</div>
+      <div id="pairing-code" class="pairing-code">${escapeHtml(LATEST_CODE)}</div>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">PHONE NUMBER <span class="optional">(optional)</span></h2>
+      <form id="pairing-form">
+        <input id="phoneNumber" name="phoneNumber" type="tel" inputmode="tel" autocomplete="tel"
+          placeholder="International format, for example: 15551234567"
+          value="${escapeHtml(PAIRING_NUMBER)}">
+        <button type="submit">Generate pairing code</button>
+      </form>
+      <p class="optional">Leave this blank and the bot can start without WhatsApp pairing.</p>
     </section>
 
     <section class="card instructions">
       <h2 class="card-title">📱 LINKING INSTRUCTIONS</h2>
       <ol>
-        <li>Set <b>PHONE_NUMBER</b> in the deployment environment.</li>
-        <li>Start the application and wait for the pairing code.</li>
+        <li>Enter the phone number in <b>international format</b> without + or spaces (optional).</li>
+        <li>Generate the pairing code.</li>
         <li>Open WhatsApp on that phone.</li>
         <li>Open <b>Linked Devices → Link a Device → Link with phone number instead</b>.</li>
         <li>Enter the pairing code shown above.</li>
@@ -144,6 +150,26 @@ const server = http.createServer((req, res) => {
     </section>
     <footer>👑 BRIAN BOT © 2026</footer>
   </main>
+  <script>
+    document.getElementById('pairing-form').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const phoneNumber = document.getElementById('phoneNumber').value;
+      const result = document.getElementById('pairing-code');
+      result.textContent = 'Generating secure pairing code...';
+      try {
+        const response = await fetch('/pairing-number', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phoneNumber })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Pairing failed');
+        result.textContent = data.pairingCode;
+      } catch (error) {
+        result.textContent = error.message;
+      }
+    });
+  </script>
 </body>
 </html>`);
 });
@@ -208,16 +234,10 @@ Prefix: *.*`;
 }
 
 async function aiReply(prompt) {
-  if (!OPENAI_API_KEY) {
-    throw new Error('AI is not configured. Set OPENAI_API_KEY in the environment.');
-  }
-
+  if (!OPENAI_API_KEY) throw new Error('AI is not configured. Set OPENAI_API_KEY in the environment.');
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${OPENAI_API_KEY}`
-    },
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: JSON.stringify({
       model: AI_MODEL,
       messages: [
@@ -227,11 +247,7 @@ async function aiReply(prompt) {
       max_tokens: 500
     })
   });
-
-  if (!response.ok) {
-    throw new Error(`AI provider returned ${response.status}`);
-  }
-
+  if (!response.ok) throw new Error(`AI provider returned ${response.status}`);
   const data = await response.json();
   return data.choices?.[0]?.message?.content?.trim() || 'The AI returned no response.';
 }
@@ -243,6 +259,7 @@ async function startBot() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false
   });
+  botSocket = sock;
 
   sock.ev.on('creds.update', saveCreds);
 
@@ -262,13 +279,13 @@ async function startBot() {
       } else {
         console.log('WhatsApp session rejected. Remove auth and link again.');
       }
-    } else if (connection === 'connecting' && !state.creds.registered && PHONE_NUMBER) {
+    } else if (connection === 'connecting' && !state.creds.registered && PAIRING_NUMBER) {
       try {
-        const code = await sock.requestPairingCode(PHONE_NUMBER);
+        const code = await sock.requestPairingCode(PAIRING_NUMBER);
         LATEST_CODE = code;
         console.log(`📱 Pairing code for configured phone number: ${code}`);
       } catch (error) {
-        LATEST_CODE = 'Pairing failed; restart the app';
+        LATEST_CODE = 'Pairing failed; insert a valid number and try again';
         console.log('Pairing failed:', error.message);
       }
     }
@@ -277,14 +294,11 @@ async function startBot() {
   sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       if (!msg.message || msg.key.fromMe) continue;
-
       const from = msg.key.remoteJid;
       const sender = msg.key.participant || msg.key.remoteJid;
-      const text = msg.message.conversation ||
-        msg.message.extendedTextMessage?.text || '';
+      const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
       const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
       const cmdText = text.trim();
-
       if (!cmdText.startsWith(BOT_PREFIX)) continue;
 
       const cmd = cmdText.slice(BOT_PREFIX.length).trim().toLowerCase().split(/\s+/)[0];
@@ -310,11 +324,7 @@ async function startBot() {
         } else if (cmd === 'jid') {
           await sock.sendMessage(from, { text: `Chat JID: ${from}\nSender JID: ${sender}` });
         } else if (cmd === 'joke') {
-          const jokes = [
-            'Why did the computer show up late? It had a hard drive! 😄',
-            'Why do programmers prefer dark mode? Because light attracts bugs! 😂',
-            'I told my computer a joke. It froze. 🥶'
-          ];
+          const jokes = ['Why did the computer show up late? It had a hard drive! 😄', 'Why do programmers prefer dark mode? Because light attracts bugs! 😂', 'I told my computer a joke. It froze. 🥶'];
           await sock.sendMessage(from, { text: jokes[Math.floor(Math.random() * jokes.length)] });
         } else if (cmd === 'dice') {
           await sock.sendMessage(from, { text: `🎲 You rolled ${Math.floor(Math.random() * 6) + 1}` });
@@ -352,7 +362,6 @@ async function startBot() {
         } else if (['groupinfo', 'members', 'tagall', 'promote', 'demote', 'kick'].includes(cmd)) {
           if (!from.endsWith('@g.us')) throw new Error('This command can only be used in groups');
           const metadata = await sock.groupMetadata(from);
-
           if (cmd === 'groupinfo') {
             await sock.sendMessage(from, { text: `👥 *${metadata.subject}*\nMembers: ${metadata.participants.length}\nDescription: ${metadata.desc || 'None'}` });
           } else if (cmd === 'members') {
@@ -360,11 +369,8 @@ async function startBot() {
           } else {
             const admins = metadata.participants.filter(p => p.admin).map(p => p.id);
             const botJid = sock.user?.id || '';
-            if (!admins.includes(botJid) && !admins.includes(sock.user?.lid)) {
-              throw new Error('Make BRIAN BOT an admin first');
-            }
+            if (!admins.includes(botJid) && !admins.includes(sock.user?.lid)) throw new Error('Make BRIAN BOT an admin first');
             if (!admins.includes(sender)) throw new Error('Only group admins can use this command');
-
             if (cmd === 'tagall') {
               const mentions = metadata.participants.map(p => p.id);
               await sock.sendMessage(from, { text: `📣 ${args || 'Attention everyone!'}\n\n${mentions.map(jid => `@${normalizeJid(jid)}`).join(' ')}`, mentions });
@@ -380,7 +386,7 @@ async function startBot() {
         } else if (['status', 'broadcast', 'owners'].includes(cmd)) {
           if (!isOwner(sock, sender)) throw new Error('This command is restricted to the owner');
           if (cmd === 'status') {
-            await sock.sendMessage(from, { text: `👑 *Owner Status*\nStatus: ONLINE\nUptime: ${Math.floor(process.uptime())}s\nPrefix: .\nAI: ${OPENAI_API_KEY ? 'Configured' : 'Not configured'}\nNode: ${process.version}` });
+            await sock.sendMessage(from, { text: `👑 *Owner Status*\nStatus: ONLINE\nUptime: ${Math.floor(process.uptime())}s\nPrefix: .\nAI: ${OPENAI_API_KEY ? 'Configured' : 'Not configured'}\nNode: ${process.version}\nPairing number: ${PAIRING_NUMBER || 'Not set (optional)'}` });
           } else if (cmd === 'broadcast') {
             if (!args) throw new Error('Usage: .broadcast <message>');
             const groups = await sock.groupFetchAllParticipating();
