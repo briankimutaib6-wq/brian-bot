@@ -1,3 +1,5 @@
+'use strict';
+
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -5,232 +7,121 @@ const {
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const http = require('http');
+const commandLibrary = require('./lib/commands');
 
-let PAIRING_NUMBER = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, '');
-const OWNER_JID = (process.env.OWNER_JID || '').replace(/[^0-9]/g, '');
+const BOT_PREFIX = '.';
+const PORT = Number(process.env.PORT || 3000);
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'gpt-4o-mini';
-const BOT_PREFIX = '.';
-
-let LATEST_CODE = PAIRING_NUMBER
-  ? 'Generating secure pairing code...'
-  : 'Phone number is optional. Insert one to generate a pairing code.';
-let BOT_STATUS = 'STARTING';
-let botSocket = null;
+const OWNER_JID = (process.env.OWNER_JID || '').replace(/[^0-9]/g, '');
+const OFFICIAL_WHATSAPP_JID = (process.env.OFFICIAL_WHATSAPP_JID || '').replace(/[^0-9]/g, '');
+const AUTO_REPLY = process.env.AUTO_REPLY !== 'false';
+let pairingNumber = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, '');
+let pairingCode = 'Enter a phone number to request a pairing code.';
+let status = 'STARTING';
+let socket;
+let connectionNoticeSent = false;
 
 function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+  return String(value).replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+  })[char]);
 }
-
-async function readRequestBody(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-async function requestPairingCode(number) {
-  if (!/^\d{7,15}$/.test(number)) {
-    throw new Error('Enter a valid international phone number (7–15 digits).');
-  }
-  if (!botSocket) {
-    throw new Error('The bot is still starting. Please try again in a few seconds.');
-  }
-  PAIRING_NUMBER = number;
-  LATEST_CODE = 'Generating secure pairing code...';
-  const code = await botSocket.requestPairingCode(number);
-  LATEST_CODE = code;
-  console.log(`📱 Pairing code for ${number}: ${code}`);
-  return code;
-}
-
-const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-
-  if (req.method === 'POST' && url.pathname === '/pairing-number') {
-    try {
-      let number = '';
-      const contentType = req.headers['content-type'] || '';
-      if (contentType.includes('application/json')) {
-        const body = await readRequestBody(req);
-        number = JSON.parse(body || '{}').phoneNumber || '';
-      } else {
-        const body = await readRequestBody(req);
-        number = new URLSearchParams(body).get('phoneNumber') || '';
-      }
-      number = String(number).replace(/[^0-9]/g, '');
-      const code = await requestPairingCode(number);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, pairingCode: code }));
-    } catch (error) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: error.message }));
-    }
-    return;
-  }
-
-  if (url.pathname === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
-      status: BOT_STATUS.toLowerCase(),
-      pairingNumberConfigured: Boolean(PAIRING_NUMBER)
-    }));
-    return;
-  }
-
-  const isOnline = BOT_STATUS === 'CONNECTED';
-  const statusColor = isOnline ? '#25D365' : '#C6A15B';
-  const statusText = isOnline ? '✅ ONLINE - CONNECTED' : `🔴 ${BOT_STATUS}`;
-
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BRIAN BOT - Pairing</title>
-  <style>
-    :root { --gold:#FFD700; --green:#25D366; --ink:#08140f; }
-    * { box-sizing:border-box; }
-    body { min-height:100vh; margin:0; font-family:Arial,sans-serif; text-align:center; color:#fff;
-      background:radial-gradient(circle at 50% 12%,rgba(37,211,102,.18),transparent 34%),linear-gradient(145deg,var(--ink),#0b1d16 60%,#071009); padding:24px 16px; }
-    .shell { max-width:620px; margin:0 auto; }
-    .crown { font-size:56px; }
-    h1 { margin:8px 0 4px; color:var(--gold); letter-spacing:2px; }
-    .tagline { color:var(--gold); font-weight:bold; }
-    .status { display:inline-block; min-width:240px; margin:12px 0 6px; padding:13px 20px; border:2px solid var(--gold); border-radius:999px; background:${statusColor}; font-weight:bold; }
-    .card { margin:20px 0; padding:22px; border:1px solid rgba(255,215,0,.75); border-radius:18px; background:linear-gradient(145deg,rgba(16,37,28,.96),rgba(7,94,84,.28)); box-shadow:0 14px 38px rgba(0,0,0,.28); }
-    .card-title { color:var(--gold); margin-top:0; }
-    .pairing-code { min-height:72px; display:flex; align-items:center; justify-content:center; padding:18px; border:2px solid var(--green); border-radius:14px; background:#07130e; color:var(--gold); font-size:clamp(22px,7vw,34px); letter-spacing:4px; font-weight:bold; overflow-wrap:anywhere; }
-    input { width:100%; padding:14px; border:1px solid var(--gold); border-radius:10px; background:#07130e; color:#fff; font-size:18px; }
-    button { width:100%; margin-top:12px; padding:14px; border:0; border-radius:10px; background:var(--gold); color:#08140f; font-size:16px; font-weight:bold; cursor:pointer; }
-    .optional { color:#9ec1b0; font-size:13px; }
-    .instructions { text-align:left; }
-    .instructions li { margin:10px 0; line-height:1.45; }
-    .instructions b { color:var(--gold); }
-    footer { color:#9ec1b0; font-size:12px; }
-  </style>
-</head>
-<body>
-  <main class="shell">
-    <div class="crown">👑</div>
-    <h1>BRIAN BOT</h1>
-    <p class="tagline">👑 KING OF BOTS • GREEN + GOLD 👑</p>
-    <div class="status">${statusText}</div>
-
-    <section class="card">
-      <h2 class="card-title">PAIRING CODE</h2>
-      <div id="pairing-code" class="pairing-code">${escapeHtml(LATEST_CODE)}</div>
-    </section>
-
-    <section class="card">
-      <h2 class="card-title">PHONE NUMBER <span class="optional">(optional)</span></h2>
-      <form id="pairing-form">
-        <input id="phoneNumber" name="phoneNumber" type="tel" inputmode="tel" autocomplete="tel"
-          placeholder="International format, for example: 15551234567"
-          value="${escapeHtml(PAIRING_NUMBER)}">
-        <button type="submit">Generate pairing code</button>
-      </form>
-      <p class="optional">Leave this blank and the bot can start without WhatsApp pairing.</p>
-    </section>
-
-    <section class="card instructions">
-      <h2 class="card-title">📱 LINKING INSTRUCTIONS</h2>
-      <ol>
-        <li>Enter the phone number in <b>international format</b> without + or spaces (optional).</li>
-        <li>Generate the pairing code.</li>
-        <li>Open WhatsApp on that phone.</li>
-        <li>Open <b>Linked Devices → Link a Device → Link with phone number instead</b>.</li>
-        <li>Enter the pairing code shown above.</li>
-      </ol>
-    </section>
-    <footer>👑 BRIAN BOT © 2026</footer>
-  </main>
-  <script>
-    document.getElementById('pairing-form').addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const phoneNumber = document.getElementById('phoneNumber').value;
-      const result = document.getElementById('pairing-code');
-      result.textContent = 'Generating secure pairing code...';
-      try {
-        const response = await fetch('/pairing-number', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phoneNumber })
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Pairing failed');
-        result.textContent = data.pairingCode;
-      } catch (error) {
-        result.textContent = error.message;
-      }
-    });
-  </script>
-</body>
-</html>`);
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`🌐 BRIAN BOT website live on port ${PORT}`));
 
 function normalizeJid(jid = '') {
-  return jid.split('@')[0].replace(/[^0-9]/g, '');
+  return String(jid).split('@')[0].replace(/[^0-9]/g, '');
+}
+
+function linkedJid(sock) {
+  const id = sock.user?.id || '';
+  const number = normalizeJid(id);
+  return number ? `${number}@s.whatsapp.net` : '';
 }
 
 function isOwner(sock, jid) {
   const sender = normalizeJid(jid);
-  const botOwner = normalizeJid(sock.user?.id || '');
-  return Boolean(sender && (sender === OWNER_JID || (!OWNER_JID && sender === botOwner) || sender === botOwner));
+  return Boolean(sender && (sender === OWNER_JID || sender === normalizeJid(sock.user?.id)));
 }
 
-function commandMenu() {
-  return `👑 *BRIAN BOT COMMANDS*
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', chunk => {
+      size += chunk.length;
+      if (size > 16_384) {
+        reject(new Error('Request body is too large.'));
+        req.destroy();
+      } else chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
 
-📋 *General*
-• menu — Show this menu
-• hi — Greeting
-• ping — Bot status
-• time — Current server time
-• uptime — Bot uptime
-• calc 2+2 — Calculator
-• jid — Show chat JID
+async function requestPairingCode(number) {
+  if (!/^\d{7,15}$/.test(number)) throw new Error('Enter a valid international phone number (7–15 digits).');
+  if (!socket) throw new Error('The bot is still starting. Try again shortly.');
+  pairingNumber = number;
+  pairingCode = 'Generating secure pairing code…';
+  pairingCode = await socket.requestPairingCode(number);
+  return pairingCode;
+}
 
-👥 *Group*
-• groupinfo — Group details
-• members — Member count
-• tagall [message] — Mention all members
-• promote @user — Promote member
-• demote @user — Demote member
-• kick @user — Remove member
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (req.method === 'GET' && url.pathname === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: status.toLowerCase(), pairingNumberConfigured: Boolean(pairingNumber) }));
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/pairing-number') {
+    try {
+      const body = await readBody(req);
+      const data = (req.headers['content-type'] || '').includes('application/json')
+        ? JSON.parse(body || '{}')
+        : Object.fromEntries(new URLSearchParams(body));
+      const code = await requestPairingCode(String(data.phoneNumber || '').replace(/[^0-9]/g, ''));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, pairingCode: code }));
+    } catch (error) {
+      if (!res.headersSent) res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: error.message }));
+    }
+    return;
+  }
+  if (req.method !== 'GET' || url.pathname !== '/') {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+    return;
+  }
+  const online = status === 'CONNECTED';
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>BRIAN BOT · Link</title>
+<style>:root{color-scheme:dark;--gold:#ffd76a;--green:#25d366}*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:24px;display:grid;place-items:center;font:16px system-ui,Arial;color:#f4fff8;background:radial-gradient(ellipse at top,#135337,#07150f 65%)}main{width:min(720px,100%)}header,section{border:1px solid #ffffff25;border-radius:22px;background:#0a1d14e8;box-shadow:0 20px 70px #0005;padding:26px;margin:14px 0}header{text-align:center}.crown{font-size:48px}h1{color:var(--gold);letter-spacing:4px;margin:6px}.tag{color:#abd2b9}.status{display:inline-block;margin:12px;padding:10px 18px;border-radius:30px;background:${online ? '#127a3e' : '#654c15'};font-weight:700}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}h2{font-size:18px;color:var(--gold);margin-top:0}.code{overflow-wrap:anywhere;padding:16px;text-align:center;border:1px solid var(--green);border-radius:12px;font-weight:700;font-size:20px;min-height:58px}input,button{width:100%;padding:14px;border-radius:11px;font:inherit}input{color:white;background:#06130d;border:1px solid #607c68}button{margin-top:10px;border:0;background:var(--gold);color:#152116;font-weight:800;cursor:pointer}li{margin:10px 0;color:#d1e4d7}footer{text-align:center;color:#8aa393;font-size:13px;padding:12px}@media(max-width:600px){.grid{grid-template-columns:1fr}body{padding:14px}header,section{padding:20px}}</style></head>
+<body><main><header><div class="crown">👑</div><h1>BRIAN BOT</h1><div class="tag">A brighter WhatsApp assistant</div><div class="status">${online ? '✅ ONLINE · CONNECTED' : `⏳ ${escapeHtml(status)}`}</div></header>
+<div class="grid"><section><h2>🔐 Pairing code</h2><div id="code" class="code">${escapeHtml(pairingCode)}</div></section><section><h2>📱 Link your WhatsApp</h2><form id="pair"><label for="number">Phone number with country code</label><input id="number" inputmode="tel" autocomplete="tel" placeholder="15551234567" value="${escapeHtml(pairingNumber)}"><button>Generate pairing code</button></form></section></div>
+<section><h2>Quick setup</h2><ol><li>Enter the linked phone number in international format.</li><li>Choose <b>Linked devices → Link a device → Link with phone number instead</b> in WhatsApp.</li><li>Enter the displayed code. Message the bot to get an instant greeting; send <b>.menu</b> for commands.</li></ol></section><footer>BRIAN BOT · Securely keep your auth folder private.</footer></main>
+<script>document.getElementById('pair').addEventListener('submit',async e=>{e.preventDefault();const out=document.getElementById('code');out.textContent='Generating…';try{const r=await fetch('/pairing-number',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:document.getElementById('number').value})});const d=await r.json();if(!r.ok)throw Error(d.error||'Pairing failed');out.textContent=d.pairingCode}catch(err){out.textContent=err.message}})</script></body></html>`);
+});
+server.listen(PORT, () => console.log(`🌐 BRIAN BOT dashboard listening on port ${PORT}`));
 
-🖼️ *Media*
-• save — Download a quoted media message
-• mediainfo — Show media details
+function getMessageText(message = {}) {
+  const content = message.ephemeralMessage?.message || message.viewOnceMessage?.message || message.viewOnceMessageV2?.message || message;
+  return content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption ||
+    content.videoMessage?.caption || content.documentMessage?.caption || content.buttonsResponseMessage?.selectedButtonId ||
+    content.listResponseMessage?.singleSelectReply?.selectedRowId || '';
+}
 
-🤖 *AI*
-• ai <prompt> — Ask AI (requires OPENAI_API_KEY)
-• ask <prompt> — Alias for AI
-
-🎉 *Fun*
-• joke — Random joke
-• dice — Roll a dice
-• coin — Flip a coin
-• fact — Random fact
-• ship @user — Fun compatibility result
-
-⬇️ *Downloader*
-• download <direct-file-url> — Download a direct file link
-
-👑 *Owner*
-• status — Detailed bot status
-• broadcast <message> — Send to all groups
-• owners — Show owner setup
-
-Prefix: *.*`;
+function menuText(category, page) {
+  if (!category) {
+    return `👑 *BRIAN BOT · COMMAND CENTER*\n━━━━━━━━━━━━━━━━━━\n✨ ${commandLibrary.count}+ ready-to-use command shortcuts\n\n📌 *Core* — menu, ping, hi, time, date, uptime, about, jid, calc, reverse, base64\n👥 *Groups* — groupinfo, members, tagall, promote, demote, kick\n🖼️ *Media* — mediainfo, save\n🤖 *AI* — ai, ask (requires OPENAI_API_KEY)\n🛠️ *Owner* — status, broadcast, owners\n\n🎯 *Command packs*\n${commandLibrary.categories.map(item => `• ${item.title}: .menu ${item.key} 1`).join('\n')}\n\nBrowse a category with *.menu <category> <page>* (20 shortcuts per page).\nExample: *.menu quotes 1*\nPrefix: *${BOT_PREFIX}*`;
+  }
+  const selected = commandLibrary.categories.find(item => item.key === category.toLowerCase());
+  if (!selected) return `Unknown category. Try: ${commandLibrary.categories.map(item => item.key).join(', ')}`;
+  const pageNumber = Number.parseInt(page || '1', 10);
+  const result = commandLibrary.list(selected.key, pageNumber, 20);
+  return `✨ *${selected.icon} ${selected.title.toUpperCase()}* · Page ${result.page}/${result.pages}\n━━━━━━━━━━━━━━━━━━\n${result.names.map(name => `• .${name}`).join('\n')}\n\nUse *.menu ${selected.key} ${result.page < result.pages ? result.page + 1 : 1}* for the next page.`;
 }
 
 async function aiReply(prompt) {
@@ -238,177 +129,177 @@ async function aiReply(prompt) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: JSON.stringify({
-      model: AI_MODEL,
-      messages: [
-        { role: 'system', content: 'You are BRIAN BOT, a helpful and concise WhatsApp assistant.' },
-        { role: 'user', content: prompt }
-      ],
-      max_tokens: 500
-    })
+    body: JSON.stringify({ model: AI_MODEL, messages: [
+      { role: 'system', content: 'You are BRIAN BOT, a helpful and concise WhatsApp assistant.' },
+      { role: 'user', content: prompt }
+    ], max_tokens: 500 })
   });
   if (!response.ok) throw new Error(`AI provider returned ${response.status}`);
   const data = await response.json();
   return data.choices?.[0]?.message?.content?.trim() || 'The AI returned no response.';
 }
 
-async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth');
-  const sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false
-  });
-  botSocket = sock;
+async function sendConnectionNotice(sock) {
+  if (connectionNoticeSent) return;
+  const target = OFFICIAL_WHATSAPP_JID
+    ? `${OFFICIAL_WHATSAPP_JID}@s.whatsapp.net`
+    : OWNER_JID ? `${OWNER_JID}@s.whatsapp.net` : linkedJid(sock);
+  if (!target) return;
+  await sock.sendMessage(target, { text: `👑 *BRIAN BOT LINK SUCCESSFUL*\n\n✅ WhatsApp is connected and the bot is ready.\n🕒 ${new Date().toLocaleString()}\n📖 Send *.menu* to browse commands.` });
+  connectionNoticeSent = true;
+}
 
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect } = update;
-
-    if (connection === 'open') {
-      BOT_STATUS = 'CONNECTED';
-      LATEST_CODE = '✅ CONNECTED';
-      console.log('✅ BRIAN BOT is online');
-    } else if (connection === 'close') {
-      BOT_STATUS = 'DISCONNECTED';
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      if (statusCode !== 401) {
-        console.log('Connection closed; reconnecting...');
-        setTimeout(startBot, 3000);
-      } else {
-        console.log('WhatsApp session rejected. Remove auth and link again.');
-      }
-    } else if (connection === 'connecting' && !state.creds.registered && PAIRING_NUMBER) {
-      try {
-        const code = await sock.requestPairingCode(PAIRING_NUMBER);
-        LATEST_CODE = code;
-        console.log(`📱 Pairing code for configured phone number: ${code}`);
-      } catch (error) {
-        LATEST_CODE = 'Pairing failed; insert a valid number and try again';
-        console.log('Pairing failed:', error.message);
-      }
+async function handleMessage(sock, msg) {
+  if (!msg.message || msg.key.fromMe) return;
+  const from = msg.key.remoteJid || '';
+  if (!from || from === 'status@broadcast' || from.endsWith('@newsletter')) return;
+  const sender = msg.key.participant || from;
+  const text = getMessageText(msg.message).trim();
+  if (!text) return;
+  if (!text.startsWith(BOT_PREFIX)) {
+    if (AUTO_REPLY && !from.endsWith('@g.us')) {
+      await sock.sendMessage(from, { text: '👋 Hi! I’m *BRIAN BOT*. I received your message and I’m here to help. Send *.menu* to explore my commands.' });
     }
-  });
+    return;
+  }
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    for (const msg of messages) {
-      if (!msg.message || msg.key.fromMe) continue;
-      const from = msg.key.remoteJid;
-      const sender = msg.key.participant || msg.key.remoteJid;
-      const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-      const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
-      const cmdText = text.trim();
-      if (!cmdText.startsWith(BOT_PREFIX)) continue;
-
-      const cmd = cmdText.slice(BOT_PREFIX.length).trim().toLowerCase().split(/\s+/)[0];
-      const args = cmdText.slice(BOT_PREFIX.length).trim().replace(/^\S+\s*/, '');
-
-      try {
-        if (cmd === 'hi' || cmd === 'hello') {
-          await sock.sendMessage(from, { text: 'Hello 👋 I am BRIAN BOT\nType *.menu* to see commands' });
-        } else if (cmd === 'menu' || cmd === 'help') {
-          await sock.sendMessage(from, { text: commandMenu() });
-        } else if (cmd === 'ping') {
-          await sock.sendMessage(from, { text: '✅ BRIAN BOT is ONLINE ⚡' });
-        } else if (cmd === 'time') {
-          await sock.sendMessage(from, { text: `🕒 ${new Date().toLocaleString()}` });
-        } else if (cmd === 'uptime') {
-          const seconds = Math.floor(process.uptime());
-          await sock.sendMessage(from, { text: `⏱️ Uptime: ${seconds}s` });
-        } else if (cmd === 'calc') {
-          if (!args) throw new Error('Usage: .calc 2+2');
-          if (!/^[-+*/().0-9\s]+$/.test(args)) throw new Error('Only basic arithmetic is allowed');
-          const result = Function(`"use strict"; return (${args})`)();
-          await sock.sendMessage(from, { text: `🧮 Result: ${result}` });
-        } else if (cmd === 'jid') {
-          await sock.sendMessage(from, { text: `Chat JID: ${from}\nSender JID: ${sender}` });
-        } else if (cmd === 'joke') {
-          const jokes = ['Why did the computer show up late? It had a hard drive! 😄', 'Why do programmers prefer dark mode? Because light attracts bugs! 😂', 'I told my computer a joke. It froze. 🥶'];
-          await sock.sendMessage(from, { text: jokes[Math.floor(Math.random() * jokes.length)] });
-        } else if (cmd === 'dice') {
-          await sock.sendMessage(from, { text: `🎲 You rolled ${Math.floor(Math.random() * 6) + 1}` });
-        } else if (cmd === 'coin') {
-          await sock.sendMessage(from, { text: Math.random() < 0.5 ? '🪙 Heads' : '🪙 Tails' });
-        } else if (cmd === 'fact') {
-          const facts = ['Octopuses have three hearts.', 'A day on Venus is longer than its year.', 'Bananas are berries, but strawberries are not.'];
-          await sock.sendMessage(from, { text: `💡 ${facts[Math.floor(Math.random() * facts.length)]}` });
-        } else if (cmd === 'ship') {
-          await sock.sendMessage(from, { text: `💕 Compatibility: ${Math.floor(Math.random() * 101)}%` });
-        } else if (cmd === 'ai' || cmd === 'ask') {
-          if (!args) throw new Error('Usage: .ai <your question>');
-          await sock.sendMessage(from, { text: '🤖 Thinking...' });
-          const reply = await aiReply(args);
-          await sock.sendMessage(from, { text: `🤖 ${reply}` });
-        } else if (cmd === 'save') {
-          if (!quoted) throw new Error('Reply to a photo, video, document, or audio message with .save');
-          const key = Object.keys(quoted)[0];
-          const buffer = await downloadMediaMessage({ message: { [key]: quoted[key] } }, 'buffer', {});
-          if (buffer.length > 20 * 1024 * 1024) throw new Error('Media exceeds the 20 MB WhatsApp bot limit');
-          await sock.sendMessage(from, { document: buffer, mimetype: 'application/octet-stream', fileName: 'saved-media.bin' });
-        } else if (cmd === 'mediainfo') {
-          const mediaType = Object.keys(msg.message).find(key => key !== 'conversation' && key !== 'extendedTextMessage');
-          await sock.sendMessage(from, { text: `🖼️ Media type: ${mediaType || 'none'}\nTo save media, reply to it with *.save*.` });
-        } else if (cmd === 'download') {
-          if (!/^https?:\/\/\S+$/.test(args)) throw new Error('Usage: .download <direct-https-url>');
-          const url = new URL(args);
-          const response = await fetch(url);
-          if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
-          const buffer = Buffer.from(await response.arrayBuffer());
-          if (buffer.length > 20 * 1024 * 1024) throw new Error('File exceeds the 20 MB WhatsApp bot limit');
-          const mime = response.headers.get('content-type') || 'application/octet-stream';
-          const filename = url.pathname.split('/').pop() || 'download.bin';
-          await sock.sendMessage(from, { document: buffer, mimetype: mime, fileName: filename });
-        } else if (['groupinfo', 'members', 'tagall', 'promote', 'demote', 'kick'].includes(cmd)) {
-          if (!from.endsWith('@g.us')) throw new Error('This command can only be used in groups');
-          const metadata = await sock.groupMetadata(from);
-          if (cmd === 'groupinfo') {
-            await sock.sendMessage(from, { text: `👥 *${metadata.subject}*\nMembers: ${metadata.participants.length}\nDescription: ${metadata.desc || 'None'}` });
-          } else if (cmd === 'members') {
-            await sock.sendMessage(from, { text: `👥 This group has ${metadata.participants.length} members.` });
+  const input = text.slice(BOT_PREFIX.length).trim();
+  if (!input) return;
+  const [cmd, ...rest] = input.split(/\s+/);
+  const command = cmd.toLowerCase();
+  const args = rest.join(' ');
+  try {
+    if (command === 'menu' || command === 'help') {
+      const [category, page] = rest;
+      await sock.sendMessage(from, { text: menuText(category, page) });
+    } else if (command === 'hi' || command === 'hello') {
+      await sock.sendMessage(from, { text: '👋 Hello! I’m *BRIAN BOT*. Send *.menu* to explore.' });
+    } else if (command === 'ping') {
+      await sock.sendMessage(from, { text: '⚡ *PONG!* BRIAN BOT is online.' });
+    } else if (command === 'time') {
+      await sock.sendMessage(from, { text: `🕒 ${new Date().toLocaleTimeString()}` });
+    } else if (command === 'date') {
+      await sock.sendMessage(from, { text: `📅 ${new Date().toLocaleDateString()}` });
+    } else if (command === 'uptime') {
+      await sock.sendMessage(from, { text: `⏱️ Uptime: ${Math.floor(process.uptime())} seconds` });
+    } else if (command === 'about') {
+      await sock.sendMessage(from, { text: `👑 *BRIAN BOT*\nA WhatsApp assistant with categorized commands and ${commandLibrary.count}+ command shortcuts.` });
+    } else if (command === 'jid') {
+      await sock.sendMessage(from, { text: `Chat: ${from}\nSender: ${sender}` });
+    } else if (command === 'reverse') {
+      if (!args) throw new Error('Usage: .reverse <text>');
+      await sock.sendMessage(from, { text: [...args].reverse().join('') });
+    } else if (command === 'base64') {
+      if (!args) throw new Error('Usage: .base64 <text>');
+      await sock.sendMessage(from, { text: Buffer.from(args).toString('base64') });
+    } else if (command === 'calc') {
+      if (!args || !/^[\d+*/().%\s-]+$/.test(args)) throw new Error('Usage: .calc 2+2 (basic arithmetic only)');
+      const tokens = args.match(/\d+(?:\.\d+)?|[()+*/%\-]/g) || [];
+      if (tokens.join('') !== args.replace(/\s/g, '')) throw new Error('Invalid arithmetic expression');
+      const value = Function(`"use strict"; return (${args})`)();
+      if (!Number.isFinite(value)) throw new Error('Result is not a finite number');
+      await sock.sendMessage(from, { text: `🧮 ${value}` });
+    } else if (command === 'ai' || command === 'ask') {
+      if (!args) throw new Error('Usage: .ai <your question>');
+      await sock.sendMessage(from, { text: '🤖 Thinking…' });
+      await sock.sendMessage(from, { text: `🤖 ${await aiReply(args)}` });
+    } else {
+      const packReply = commandLibrary.getResponse(command);
+      if (packReply) {
+        await sock.sendMessage(from, { text: packReply });
+      } else if (['groupinfo', 'members', 'tagall', 'promote', 'demote', 'kick'].includes(command)) {
+        if (!from.endsWith('@g.us')) throw new Error('This command can only be used in a group.');
+        const metadata = await sock.groupMetadata(from);
+        if (command === 'groupinfo') {
+          await sock.sendMessage(from, { text: `👥 *${metadata.subject}*\nMembers: ${metadata.participants.length}\nDescription: ${metadata.desc || 'None'}` });
+        } else if (command === 'members') {
+          await sock.sendMessage(from, { text: `👥 This group has ${metadata.participants.length} members.` });
+        } else {
+          const admins = metadata.participants.filter(p => p.admin).map(p => normalizeJid(p.id));
+          if (!admins.includes(normalizeJid(sock.user?.id)) && !admins.includes(normalizeJid(sock.user?.lid))) throw new Error('Make BRIAN BOT a group admin first.');
+          if (!admins.includes(normalizeJid(sender))) throw new Error('Only group admins can use this command.');
+          if (command === 'tagall') {
+            const mentions = metadata.participants.map(p => p.id);
+            await sock.sendMessage(from, { text: `📣 ${args || 'Attention everyone!'}\n\n${mentions.map(jid => `@${normalizeJid(jid)}`).join(' ')}`, mentions });
           } else {
-            const admins = metadata.participants.filter(p => p.admin).map(p => p.id);
-            const botJid = sock.user?.id || '';
-            if (!admins.includes(botJid) && !admins.includes(sock.user?.lid)) throw new Error('Make BRIAN BOT an admin first');
-            if (!admins.includes(sender)) throw new Error('Only group admins can use this command');
-            if (cmd === 'tagall') {
-              const mentions = metadata.participants.map(p => p.id);
-              await sock.sendMessage(from, { text: `📣 ${args || 'Attention everyone!'}\n\n${mentions.map(jid => `@${normalizeJid(jid)}`).join(' ')}`, mentions });
-            } else {
-              const targets = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
-              if (!targets.length) throw new Error(`Usage: .${cmd} @member`);
-              if (cmd === 'kick') await sock.groupParticipantsUpdate(from, targets, 'remove');
-              if (cmd === 'promote') await sock.groupParticipantsUpdate(from, targets, 'promote');
-              if (cmd === 'demote') await sock.groupParticipantsUpdate(from, targets, 'demote');
-              await sock.sendMessage(from, { text: `✅ ${cmd.charAt(0).toUpperCase() + cmd.slice(1)} completed for ${targets.length} member(s).` });
-            }
-          }
-        } else if (['status', 'broadcast', 'owners'].includes(cmd)) {
-          if (!isOwner(sock, sender)) throw new Error('This command is restricted to the owner');
-          if (cmd === 'status') {
-            await sock.sendMessage(from, { text: `👑 *Owner Status*\nStatus: ONLINE\nUptime: ${Math.floor(process.uptime())}s\nPrefix: .\nAI: ${OPENAI_API_KEY ? 'Configured' : 'Not configured'}\nNode: ${process.version}\nPairing number: ${PAIRING_NUMBER || 'Not set (optional)'}` });
-          } else if (cmd === 'broadcast') {
-            if (!args) throw new Error('Usage: .broadcast <message>');
-            const groups = await sock.groupFetchAllParticipating();
-            let sent = 0;
-            for (const jid of Object.keys(groups)) {
-              await sock.sendMessage(jid, { text: `📢 *BRIAN BOT BROADCAST*\n\n${args}` });
-              sent++;
-            }
-            await sock.sendMessage(from, { text: `✅ Broadcast sent to ${sent} group(s).` });
-          } else if (cmd === 'owners') {
-            await sock.sendMessage(from, { text: `👑 Owner JID: ${OWNER_JID || 'linked account (default)'}\nSet OWNER_JID to restrict owner commands explicitly.` });
+            const mentions = msg.message.extendedTextMessage?.contextInfo?.mentionedJid || [];
+            if (!mentions.length) throw new Error(`Usage: .${command} @member`);
+            await sock.groupParticipantsUpdate(from, mentions, command === 'kick' ? 'remove' : command);
+            await sock.sendMessage(from, { text: `✅ ${command} completed for ${mentions.length} member(s).` });
           }
         }
-      } catch (error) {
-        console.log(`Command ${cmd} failed:`, error.message);
-        await sock.sendMessage(from, { text: `❌ ${error.message}` });
+      } else if (command === 'mediainfo') {
+        const type = Object.keys(msg.message).find(key => /image|video|audio|document|sticker/i.test(key)) || 'none';
+        await sock.sendMessage(from, { text: `🖼️ Media type: ${type}. Reply to media with *.save* to download it.` });
+      } else if (command === 'save') {
+        const quoted = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
+        if (!quoted) throw new Error('Reply to a photo, video, document, or audio with .save');
+        const wrapped = quoted.ephemeralMessage?.message || quoted.viewOnceMessage?.message || quoted;
+        const key = Object.keys(wrapped).find(name => /imageMessage|videoMessage|audioMessage|documentMessage|stickerMessage/.test(name));
+        if (!key) throw new Error('The replied-to message does not contain downloadable media.');
+        const buffer = await downloadMediaMessage({ message: { [key]: wrapped[key] } }, 'buffer', {});
+        if (buffer.length > 20 * 1024 * 1024) throw new Error('Media exceeds the 20 MB limit.');
+        await sock.sendMessage(from, { document: buffer, mimetype: 'application/octet-stream', fileName: 'saved-media.bin' });
+      } else if (['status', 'owners', 'broadcast'].includes(command)) {
+        if (!isOwner(sock, sender)) throw new Error('This command is restricted to the owner.');
+        if (command === 'status') {
+          await sock.sendMessage(from, { text: `👑 *Status*\nConnection: ${status}\nUptime: ${Math.floor(process.uptime())}s\nCommands: ${commandLibrary.count}+\nAI: ${OPENAI_API_KEY ? 'configured' : 'not configured'}` });
+        } else if (command === 'owners') {
+          await sock.sendMessage(from, { text: `Owner: ${OWNER_JID || 'linked account'}\nOfficial notification: ${OFFICIAL_WHATSAPP_JID || OWNER_JID || 'linked account'}` });
+        } else {
+          if (!args) throw new Error('Usage: .broadcast <message>');
+          const groups = await sock.groupFetchAllParticipating();
+          let sent = 0;
+          for (const jid of Object.keys(groups)) {
+            await sock.sendMessage(jid, { text: `📢 *BRIAN BOT BROADCAST*\n\n${args}` });
+            sent++;
+          }
+          await sock.sendMessage(from, { text: `✅ Broadcast sent to ${sent} group(s).` });
+        }
+      } else {
+        await sock.sendMessage(from, { text: `I don't know *.${command}* yet. Send *.menu* to browse commands.` });
       }
+    }
+  } catch (error) {
+    console.error(`Command ${command} failed:`, error.message);
+    await sock.sendMessage(from, { text: `❌ ${error.message}` });
+  }
+}
+
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState('auth');
+  const sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }), printQRInTerminal: false });
+  socket = sock;
+  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('connection.update', async update => {
+    const { connection, lastDisconnect } = update;
+    if (connection === 'open') {
+      status = 'CONNECTED';
+      pairingCode = '✅ CONNECTED';
+      try { await sendConnectionNotice(sock); } catch (error) { console.error('WhatsApp success notice failed:', error.message); }
+      console.log('✅ BRIAN BOT is online');
+    } else if (connection === 'close') {
+      status = 'DISCONNECTED';
+      const code = lastDisconnect?.error?.output?.statusCode;
+      if (code !== 401) {
+        console.log('Connection closed; reconnecting…');
+        setTimeout(() => startBot().catch(error => console.error('Reconnect failed:', error)), 3000);
+      } else console.error('WhatsApp session rejected. Remove auth and link again.');
+    } else if (connection === 'connecting' && !state.creds.registered && pairingNumber) {
+      try { pairingCode = await sock.requestPairingCode(pairingNumber); }
+      catch (error) { pairingCode = 'Pairing failed. Check the phone number and try again.'; console.error('Pairing failed:', error.message); }
+    }
+  });
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return;
+    for (const msg of messages) {
+      try { await handleMessage(sock, msg); }
+      catch (error) { console.error('Message handling failed:', error.message); }
     }
   });
 }
 
-startBot().catch((error) => {
+startBot().catch(error => {
   console.error('Failed to start BRIAN BOT:', error);
   process.exit(1);
 });
