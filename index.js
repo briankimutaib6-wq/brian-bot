@@ -5,6 +5,7 @@ const {
   useMultiFileAuthState,
   downloadMediaMessage
 } = require('@whiskeysockets/baileys');
+const { attachMessageHandler } = require('./lib/command-runtime');
 const pino = require('pino');
 const http = require('http');
 
@@ -20,6 +21,8 @@ let pairingNumber = (process.env.PHONE_NUMBER || '').replace(/[^0-9]/g, '');
 let pairingCode = 'Enter a phone number to request a pairing code.';
 let status = 'STARTING';
 let socket;
+let pairingRequestInProgress = false;
+let reconnectTimer;
 let connectionNoticeSent = false;
 const START_TIME = Date.now();
 let menuUsers = {};
@@ -58,11 +61,17 @@ function readBody(req) {
 
 async function requestPairingCode(number) {
   if (!/^\d{7,15}$/.test(number)) throw new Error('Enter a valid international phone number (7–15 digits).');
-  if (!socket) throw new Error('The bot is still starting. Try again shortly.');
+  if (!socket || status === 'CONNECTED') throw new Error('The bot is already connected or still starting. Try again shortly.');
+  if (pairingRequestInProgress) throw new Error('A pairing code is already being generated. Please wait.');
   pairingNumber = number;
   pairingCode = 'Generating secure pairing code…';
-  pairingCode = await socket.requestPairingCode(number);
-  return pairingCode;
+  pairingRequestInProgress = true;
+  try {
+    pairingCode = await socket.requestPairingCode(number);
+    return pairingCode;
+  } finally {
+    pairingRequestInProgress = false;
+  }
 }
 
 const server = http.createServer(async (req, res) => {
@@ -84,35 +93,47 @@ const server = http.createServer(async (req, res) => {
   if (req.method !== 'GET' || url.pathname !== '/') { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Not found'); return; }
   const online = status === 'CONNECTED';
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-  res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>BRIAN BOT</title><style>:root{color-scheme:dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f14;color:#fff;font:16px system-ui;padding:24px}main{max-width:760px;width:100%;border:1px solid #26313d;border-radius:18px;padding:24px;background:#111820}h1{margin:8px 0}.status{color:#25d366}.code{font-size:28px;font-weight:800;letter-spacing:4px;color:#00ff00}.grid{display:grid;gap:16px}section{border:1px solid #26313d;border-radius:12px;padding:16px}input,button{font:inherit;padding:10px;border-radius:8px}input{width:min(420px,70%)}button{cursor:pointer;font-weight:700;background:#25d366;border:none}</style></head><body><main><h1>👑 BRIAN BOT</h1><div class="status">${online ? '🟢 ONLINE · CONNECTED' : `🟠 ${escapeHtml(status)}`}</div><div class="grid"><section><h2>📱 Pairing code</h2><div class="code">${escapeHtml(pairingCode)}</div><p>Phone: +${escapeHtml(pairingNumber || 'Not set')}</p></section><section><h2>🔗 Link your WhatsApp</h2><form id="pair"><input id="number" type="tel" placeholder="2547XXXXXXXX" required><button>Pair</button></form><p>1. WhatsApp → Linked Devices → Link a device<br>2. Choose <b>Link with phone number</b><br>3. Enter the pairing code shown above</p></section><section><h2>Panels</h2><p>Send <b>.menu</b> to WhatsApp for the interactive command list.</p></section></div></main><script>const pair=document.getElementById('pair');const number=document.getElementById('number');pair.addEventListener('submit',async e=>{e.preventDefault();const r=await fetch('/pairing-number',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phoneNumber:number.value})});const d=await r.json();alert(r.ok?'Code: '+d.pairingCode:d.error)})</script></body></html>`);
+  res.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="10"><title>BRIAN BOT</title></head><body><main><h1>🤖 BRIAN BOT</h1><p>Status: ${online ? '✅ Connected' : escapeHtml(status)}</p><p>${escapeHtml(pairingCode)}</p><p>${commandCount} listed commands · uptime ${escapeHtml(getRuntime())} · memory ${escapeHtml(getMemory())}</p><form method="post" action="/pairing-number"><label>WhatsApp number (international digits only) <input name="phoneNumber" required></label><button type="submit">Request pairing code</button></form></main></body></html>`);
 });
 server.listen(PORT, () => console.log(`🌐 BRIAN BOT dashboard on ${PORT}`));
 
-function getMessageText(message = {}) {
-  const content = message.ephemeralMessage?.message || message.viewOnceMessage?.message || message.viewOnceMessageV2?.message || message;
-  return content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || content.videoMessage?.caption || content.documentMessage?.caption || '';
-}
-
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth');
-  const sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }), printQRInTerminal: false });
+  const sock = makeWASocket({ auth: state, logger: pino({ level: process.env.LOG_LEVEL || 'warn' }), printQRInTerminal: false });
   socket = sock;
+  attachMessageHandler(sock);
   sock.ev.on('creds.update', saveCreds);
   sock.ev.on('connection.update', async update => {
     const { connection, lastDisconnect } = update;
     if (connection === 'open') {
-      status = 'CONNECTED'; pairingCode = '✅ CONNECTED';
-      console.log('✅ BRIAN BOT is online');
+      status = 'CONNECTED';
+      pairingCode = '✅ CONNECTED';
+      pairingRequestInProgress = false;
+      console.log('✅ BRIAN BOT is online; message handler is ready');
     } else if (connection === 'close') {
       status = 'DISCONNECTED';
+      pairingRequestInProgress = false;
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code !== 401) {
-        console.log('Connection closed; reconnecting…');
-        setTimeout(() => startBot().catch(error => console.error('Reconnect failed:', error)), 3000);
-      } else console.error('WhatsApp session rejected. Remove auth and link again.');
-    } else if (connection === 'connecting' && !state.creds.registered && pairingNumber) {
-      try { pairingCode = await sock.requestPairingCode(pairingNumber); }
-      catch (error) { pairingCode = 'Pairing failed. Check the phone number and try again.'; console.error('Pairing failed:', error.message); }
+        console.error(`WhatsApp connection closed${code ? ` (status ${code})` : ''}; reconnecting…`);
+        if (!reconnectTimer) reconnectTimer = setTimeout(() => {
+          reconnectTimer = undefined;
+          startBot().catch(error => console.error('Reconnect failed:', error));
+        }, 3000);
+      } else {
+        pairingCode = 'Session rejected. Remove the saved auth session and link again.';
+        console.error('WhatsApp session rejected. Remove auth and link again.');
+      }
+    } else if (connection === 'connecting' && !state.creds.registered && pairingNumber && !pairingRequestInProgress) {
+      pairingRequestInProgress = true;
+      try {
+        pairingCode = await sock.requestPairingCode(pairingNumber);
+      } catch (error) {
+        pairingCode = 'Pairing failed. Check the phone number and try again.';
+        console.error('Pairing failed:', error?.message || error);
+      } finally {
+        pairingRequestInProgress = false;
+      }
     }
   });
 }
