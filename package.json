@@ -4,7 +4,7 @@
   "description": "BRIAN BOT - WhatsApp Bot - Pairing Pass Fixed",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node -r ./lib/command-runtime.js index.js"
   },
   "engines": {
     "node": "20.x"
