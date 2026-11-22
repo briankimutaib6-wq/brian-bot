@@ -1,6 +1,6 @@
 # BRIAN BOT
 
-A WhatsApp assistant built with Node.js and Baileys, with an attractive pairing dashboard, instant direct-message replies, and categorized command packs.
+A WhatsApp assistant built with Node.js and Baileys, with an expanded command runtime and pairing dashboard.
 
 ## Setup
 
@@ -11,18 +11,35 @@ npm start
 
 Open `http://localhost:3000` to request a WhatsApp pairing code. On WhatsApp, choose **Linked devices → Link a device → Link with phone number instead**, then enter the code.
 
+## Commands
+
+Send `.menu` or `.help` for the command menu.
+
+BRIAN BOT provides 1000+ commands in each runtime category, including Utility, Fun, Media, Group, Owner, and Information panels. The numbered panel aliases are also available in `lib/commands.js`.
+
+Working utility examples:
+
+- `.ping`
+- `.time`
+- `.date`
+- `.uptime`
+- `.uuid`
+- `.random [maximum]`
+- `.password [length]`
+- `.calc [expression]`
+- `.reverse [text]`
+- `.base64 [text]`
+- `.status`
+- `.stats`
+
 ## Environment variables
 
 - `PHONE_NUMBER` — optional default pairing phone number in international format, digits only.
-- `OWNER_JID` — optional owner phone number (digits only); enables owner-only commands.
-- `OFFICIAL_WHATSAPP_JID` — optional destination for the successful-link notice.
-- `AUTO_REPLY` — set to `false` to disable instant greetings.
-- `OPENAI_API_KEY` — optional; enables `.ai` and `.ask`.
-- `AI_MODEL` — optional model name, defaults to `gpt-4o-mini`.
+- `OWNER_JID` — optional owner phone number, enables owner-only command checks.
+- `OFFICIAL_WHATSAPP_JID` — optional successful-link notice destination.
+- `OPENAI_API_KEY` — optional AI integration key.
+- `AI_MODEL` — optional AI model name, defaults to `gpt-4o-mini`.
 - `PORT` — dashboard port, defaults to `3000`.
+- `LOG_LEVEL` — Baileys log level, defaults to `warn`.
 
-Keep the generated `auth/` session private and out of source control.
-
-## Commands
-
-Send `.menu` for the styled command index. The bot includes owner, main, download, group, VPN, and book panels.
+Keep `auth/` private and out of source control.
