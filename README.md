@@ -25,6 +25,10 @@ Open `http://localhost:3000` to request a WhatsApp pairing code. On WhatsApp, ch
 
 Keep the generated `auth/` session private and out of source control.
 
+## YouTube commands
+
+Install dependencies with `npm install`. `.play <YouTube URL>` and `.ytmp3 <YouTube URL>` send an MP3 audio file; `.video <YouTube URL>` and `.ytmp4 <YouTube URL>` send an MP4 video. The bot uses `@distube/ytdl-core` and FFmpeg for conversion. YouTube downloads are limited to videos up to 20 minutes and files up to 50 MB. Only download content you have permission to use and comply with the applicable platform terms and copyright laws.
+
 ## Commands
 
 Send `.menu` for the styled command index. The bot includes owner, main, download, group, VPN, and book panels. `.apk <app name>` looks up an APK using the David Cyril Tech API, and `.csong <song or artist>` searches Apple Music/iTunes and returns matching tracks and preview links. Commands are handled normally; the automatic greeting applies only to non-command messages in direct chats, not groups.
