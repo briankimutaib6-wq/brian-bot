@@ -21,9 +21,10 @@ Open `http://localhost:3000` to request a WhatsApp pairing code. On WhatsApp, ch
 - `OPENAI_API_KEY` — optional; enables `.ai` and `.ask`.
 - `AI_MODEL` — optional model name, defaults to `gpt-4o-mini`.
 - `PORT` — dashboard port, defaults to `3000`.
+- `PREFIX_SETTINGS_PATH` — optional path for persisted per-sender command prefixes.
 
 Keep the generated `auth/` session private and out of source control.
 
 ## Commands
 
-Send `.menu` for the styled command index. The bot includes owner, main, download, group, VPN, and book panels. Commands are handled normally; the automatic greeting applies only to non-command messages in direct chats, not groups.
+Send `.menu` for the styled command index. The bot includes owner, main, download, group, VPN, and book panels. `.apk <app name>` looks up an APK using the David Cyril Tech API, and `.csong <song or artist>` searches Apple Music/iTunes and returns matching tracks and preview links. Commands are handled normally; the automatic greeting applies only to non-command messages in direct chats, not groups.
