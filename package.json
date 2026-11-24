@@ -1,19 +1,11 @@
 {
-  "name": "brianbot1",
+  "name": "brian-bot",
   "version": "1.0.0",
-  "description": "BRIAN BOT - WhatsApp Bot - Pairing Pass Fixed",
   "main": "index.js",
-  "scripts": {
-    "start": "node bootstrap.js"
-  },
-  "engines": {
-    "node": "20.x"
-  },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.21",
-    "@distube/ytdl-core": "^4.15.9",
-    "fluent-ffmpeg": "^2.1.3",
-    "ffmpeg-static": "^5.2.0",
-    "pino": "^9.3.2"
+    "@whiskeysockets/baileys": "^6.7.0",
+    "express": "^4.18.2",
+    "pino": "^9.0.0"
   }
 }
