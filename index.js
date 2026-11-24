@@ -18,7 +18,7 @@ const {
 const crypto = require('node:crypto');
 
 const OWNER = (process.env.OWNER_NUMBER || '').replace(/\D/g, '');
-const PAIRING_TOKEN = process.env.PAIRING_TOKEN || '';
+const PAIRING_SECRET = process.env.PAIRING_SECRET || '';
 const PREFIX = '.';
 const PORT = Number(process.env.PORT) || 3000;
 const PAIR_RATE_WINDOW_MS = 15 * 60 * 1000;
@@ -36,19 +36,23 @@ if (!/^\d{8,15}$/.test(OWNER)) {
 const app = express();
 app.disable('x-powered-by');
 app.get('/', (_req, res) => {
-  res.type('html').send('<h1>Brian Bot is running</h1><p>Connection status: <a href="/status">/status</a></p>');
+  res.type('html').send('<h1>👑 BRIAN BOT RUNNING</h1><p><a href="/pairing">Secure pairing</a></p>');
 });
 app.get('/status', (_req, res) => res.json({ connected: isConnected }));
 
-// Pairing codes are sensitive: only issue them via an authenticated POST request.
-// Configure PAIRING_TOKEN as a long random secret and use HTTPS in production.
+const PAIRING_HTML = `<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Brian Bot - Secure Pairing</title><style>*{margin:0;padding:0;box-sizing:border-box;font-family:Arial,sans-serif}body{background:linear-gradient(135deg,#075e54,#25d366);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}.card{background:#fff;width:100%;max-width:430px;border-radius:24px;padding:28px;text-align:center;box-shadow:0 20px 50px rgba(0,0,0,.25)}.btn{width:100%;padding:15px;border:none;border-radius:14px;font-size:17px;font-weight:bold;color:#fff;background:#25d366;cursor:pointer;margin-top:12px}.btn:disabled{opacity:.6}input{width:100%;padding:14px;border:2px solid #e0e0e0;border-radius:12px;font-size:16px;text-align:center;margin-top:8px;outline:none}#code{font-size:34px;font-weight:900;letter-spacing:5px;color:#075e54;margin:12px 0;background:#fff;padding:10px;border-radius:10px;border:1px solid #c8e6c9}#codeBox{display:none;background:#f0fff4;border:2px dashed #25d366;border-radius:16px;padding:18px;margin-top:15px}.copyBtn{background:#075e54;color:#fff;border:none;padding:12px;border-radius:10px;font-weight:bold;width:100%;cursor:pointer}.waBtn{display:block;margin-top:12px;background:#25d366;color:#fff;text-decoration:none;padding:13px;border-radius:10px;font-weight:bold}.bar{height:10px;background:#e0e0e0;border-radius:10px;margin-top:8px;overflow:hidden}.fill{height:100%;background:#25d366;width:100%;transition:width 1s linear}</style></head><body><div class="card"><div style="font-size:50px">🔒</div><h1>BRIAN BOT</h1><p>Secure Pairing - Owner Only</p><p style="margin-top:10px">Linking: <b>+${OWNER}</b><br><span style="font-size:12px;color:#888">Number is locked and cannot be changed</span></p><p style="text-align:left;font-size:13px;font-weight:bold;margin-top:15px">🔑 Pairing Secret</p><input id="secret" type="password" autocomplete="current-password" placeholder="Enter PAIRING_SECRET"><button class="btn" id="generate" onclick="generateCode()">🔑 GENERATE CODE</button><p id="status" style="color:#e65100;font-size:13px;margin-top:10px;font-weight:bold"></p><div id="codeBox"><div>YOUR CODE FOR +${OWNER}</div><div id="code">--------</div><button class="copyBtn" onclick="copyCode()">📋 COPY CODE</button><p id="copied" style="color:green;font-size:12px;margin-top:8px"></p><a class="waBtn" href="whatsapp://linked_devices">📱 OPEN WHATSAPP</a><p id="timer" style="font-weight:bold;margin-top:10px">⏳ 60 seconds left</p><div class="bar"><div class="fill" id="fill"></div></div></div><p style="text-align:left;background:#f8f8f8;border-radius:12px;padding:12px;margin-top:15px;font-size:12px;line-height:1.8">1. Enter your pairing secret<br>2. Tap GENERATE<br>3. Copy the code<br>4. WhatsApp → Linked Devices → Link with phone number<br>5. Paste promptly</p></div><script>let timer,seconds=60;async function generateCode(){const secret=document.getElementById('secret').value;const status=document.getElementById('status');const button=document.getElementById('generate');if(!secret){status.innerText='❌ Enter PAIRING_SECRET';return}button.disabled=true;status.innerText='Generating...';try{const response=await fetch('/pair',{method:'POST',headers:{Authorization:'Bearer '+secret}});const data=await response.json();if(data.code){document.getElementById('codeBox').style.display='block';document.getElementById('code').innerText=data.code;status.innerText='✅ Code generated';try{await navigator.clipboard.writeText(data.code);document.getElementById('copied').innerText='✅ Auto-copied!'}catch(error){document.getElementById('copied').innerText='Copy the code using the button below.'}startTimer()}else{status.innerText='❌ '+(data.error||'Pairing failed')}}catch(error){status.innerText='❌ Server error'}finally{button.disabled=false}}function copyCode(){const value=document.getElementById('code').innerText;navigator.clipboard.writeText(value).then(()=>document.getElementById('copied').innerText='✅ Copied!').catch(()=>{document.getElementById('copied').innerText='Clipboard unavailable; select and copy the code.'})}function startTimer(){seconds=60;clearInterval(timer);const fill=document.getElementById('fill');fill.style.width='100%';timer=setInterval(()=>{seconds--;document.getElementById('timer').innerText=seconds>0?'⏳ '+seconds+' seconds left':'❌ Code expired';fill.style.width=(seconds/60*100)+'%';if(seconds<=0)clearInterval(timer)},1000)}</script></body></html>`;
+
+app.get('/pairing', (_req, res) => res.type('html').send(PAIRING_HTML));
+
+// Pairing codes are sensitive: authenticate via a POST header, use only OWNER,
+// rate-limit requests, and never put secrets or codes in URLs or logs.
 app.post('/pair', async (req, res) => {
-  if (!PAIRING_TOKEN) {
-    return res.status(503).json({ error: 'Pairing is disabled; configure PAIRING_TOKEN.' });
+  if (!PAIRING_SECRET) {
+    return res.status(503).json({ error: 'Pairing is disabled; configure PAIRING_SECRET.' });
   }
 
   const supplied = (req.get('authorization') || '').replace(/^Bearer\s+/i, '');
-  const expectedBuffer = Buffer.from(PAIRING_TOKEN);
+  const expectedBuffer = Buffer.from(PAIRING_SECRET);
   const suppliedBuffer = Buffer.from(supplied);
   const authorized = suppliedBuffer.length === expectedBuffer.length &&
     crypto.timingSafeEqual(suppliedBuffer, expectedBuffer);
@@ -76,8 +80,7 @@ app.post('/pair', async (req, res) => {
   lastPairAt = now;
   try {
     const code = await sock.requestPairingCode(OWNER);
-    // Do not log pairing codes; anyone with a code may link the WhatsApp account.
-    return res.json({ code });
+    return res.json({ code, expiresIn: 60 });
   } catch (error) {
     console.error('Pairing request failed:', error?.message || error);
     return res.status(502).json({ error: 'Could not generate a pairing code.' });
